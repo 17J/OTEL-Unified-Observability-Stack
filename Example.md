@@ -1,21 +1,54 @@
-# otel-dev-observability-stack
+# 🛠️ OpenTelemetry Observability Stack - Dev/Staging Deployment with Expected Output
 
-## 🛠️ OpenTelemetry Observability Stack for Dev/Staging (Jaeger, Prometheus, ELK)
+Complete deployment guide for OpenTelemetry with Jaeger, Prometheus, and ELK stack in Kubernetes (KIND/Minikube).
 
-This document provides a complete, production-grade template for deploying a unified OpenTelemetry observability stack in a Kubernetes **Dev/Staging** environment, typically using a local cluster like **KIND** or **Minikube**.
+---
 
-It integrates the OpenTelemetry Collector with all three major backends: **Jaeger** (Traces), **Prometheus/Grafana** (Metrics), and **Elasticsearch/Kibana** (Logs).
+## 📋 Prerequisites
 
+```bash
+# Verify installations
+docker --version
+kubectl version --client
+helm version
+kind --version  # or minikube version
+```
 
+**Expected Output:**
+```
+Docker version 24.0.x, build xxxxx
+Client Version: v1.28.x
+version.BuildInfo{Version:"v3.12.x", ...}
+kind v0.20.0 go1.20.x linux/amd64
+```
 
-### 🚀 Step-by-Step Deployment Guide
+---
 
-This guide assumes you have **Docker**, **kubectl**, and **Helm** installed.
+## 🚀 Step 1: Create KIND Cluster
 
+```bash
+# Create a KIND cluster named otel-poc
+kind create cluster --name otel-poc
+```
 
-#### Step 1: Add Helm Repositories
+**Expected Output:**
+```
+Creating cluster "otel-poc" ...
+ ✓ Ensuring node image (kindest/node:v1.27.3) 🖼
+ ✓ Preparing nodes 📦
+ ✓ Writing configuration 📜
+ ✓ Starting control-plane 🕹️
+ ✓ Installing CNI 🔌
+ ✓ Installing StorageClass 💾
+Set kubectl context to "kind-otel-poc"
+You can now use your cluster with:
 
-Add all necessary Helm charts for the observability components.
+kubectl cluster-info --context kind-otel-poc
+```
+
+---
+
+## 📦 Step 2: Add Helm Repositories
 
 ```bash
 helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
@@ -26,13 +59,24 @@ helm repo add elastic https://helm.elastic.co
 helm repo update
 ```
 
-#### Step 2: Install Core Backends (Jaeger, Prometheus/Grafana, ELK)
+**Expected Output:**
+```
+"open-telemetry" has been added to your repositories
+"grafana" has been added to your repositories
+"prometheus-community" has been added to your repositories
+"jaegertracing" has been added to your repositories
+"elastic" has been added to your repositories
+Hang tight while we grab the latest from your chart repositories...
+...Successfully got an update from the "open-telemetry" chart repository
+...Successfully got an update from the "elastic" chart repository
+Update Complete. ⎈Happy Helming!⎈
+```
 
-We will install each component into its own namespace for clear separation.
+---
 
-##### 2.1. Jaeger (Traces)
+## 🔧 Step 3: Deploy Core Backends
 
-Deploy Jaeger in all-in-one mode for simplicity, using in-memory storage.
+### 3.1 Deploy Jaeger (Traces)
 
 ```bash
 helm upgrade --install jaeger jaegertracing/jaeger \
@@ -40,152 +84,286 @@ helm upgrade --install jaeger jaegertracing/jaeger \
   --set allInOne.enabled=true \
   --set collector.enabled=false \
   --set storage.type=memory \
-  --set collector.service.otlp.grpc.port=4317 \
-  --set collector.service.otlp.http.port=4318
+  --set allInOne.ingester.service.otlp.grpc.port=4317 \
+  --set allInOne.ingester.service.otlp.http.port=4318
 ```
 
-##### 2.2. Prometheus & Grafana (Metrics)
+**Expected Output:**
+```
+Release "jaeger" does not exist. Installing it now.
+NAME: jaeger
+LAST DEPLOYED: Mon Dec 15 10:30:45 2025
+NAMESPACE: observability
+STATUS: deployed
+REVISION: 1
+NOTES:
+###############################################################################
+# Jaeger all-in-one is deployed
+# Access the UI: kubectl port-forward -n observability svc/jaeger-query 16686:16686
+###############################################################################
+```
 
-Deploy the `kube-prometheus-stack` using the provided Alertmanager configuration. **You will need to save the content of `prometheus/alertmanager-config.yaml` to a file before running this command.**
+**Verify Deployment:**
+```bash
+kubectl get pods -n observability
+```
 
+**Expected Output:**
+```
+NAME                              READY   STATUS    RESTARTS   AGE
+jaeger-all-in-one-0               1/1     Running   0          45s
+```
+
+---
+
+### 3.2 Deploy Prometheus & Grafana (Metrics)
+
+**First, create the Alertmanager config file:**
+
+```bash
+cat > alertmanager-config.yaml <<'EOF'
+alertmanager:
+  config:
+    global: {}
+    receivers:
+      - name: "null"
+      - name: "slack-notifications"
+        slack_configs:
+          - channel: "#alerts-devops"
+            api_url: "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+            send_resolved: true
+            title: "[{{ .Status | toUpper }}] - {{ .CommonLabels.alertname }}"
+            text: |
+              *Severity:* {{ .CommonLabels.severity }}
+              *Summary:* {{ .CommonLabels.summary }}
+      - name: "pagerduty-critical"
+        pagerduty_configs:
+          - service_key: "YOUR_PAGERDUTY_KEY"
+            send_resolved: true
+            severity: "critical"
+    route:
+      group_by: ["alertname", "cluster", "service"]
+      receiver: "null"
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+      routes:
+        - match:
+            severity: "critical"
+          receiver: "pagerduty-critical"
+          group_wait: 5s
+          group_interval: 1m
+        - matchers:
+            - severity =~ "warning|info"
+          receiver: "slack-notifications"
+EOF
+```
+
+**Deploy:**
 ```bash
 helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
   --namespace monitoring --create-namespace \
   --set grafana.adminPassword=admin123 \
-  -f prometheus/alertmanager-config.yaml
+  -f alertmanager-config.yaml
 ```
 
-##### 2.3. Elasticsearch & Kibana (Logs)
+**Expected Output:**
+```
+Release "monitoring" does not exist. Installing it now.
+NAME: monitoring
+LAST DEPLOYED: Mon Dec 15 10:32:15 2025
+NAMESPACE: monitoring
+STATUS: deployed
+REVISION: 1
+NOTES:
+kube-prometheus-stack has been installed. Check its status by running:
+  kubectl --namespace monitoring get pods -l "release=monitoring"
 
-Deploy a single-node Elasticsearch cluster and Kibana using the provided values files. **Remember to update the passwords in `elk/elasticsearch-values.yaml` and save the content of both `elk/elasticsearch-values.yaml` and `elk/kibana-values.yaml` to files before running these commands.**
+Visit https://github.com/prometheus-operator/kube-prometheus for instructions on how to create & configure Alertmanager and Prometheus instances using the Operator.
+```
+
+**Verify Deployment:**
+```bash
+kubectl get pods -n monitoring
+```
+
+**Expected Output:**
+```
+NAME                                                     READY   STATUS    RESTARTS   AGE
+alertmanager-monitoring-kube-prometheus-alertmanager-0   2/2     Running   0          2m
+monitoring-grafana-7b4d7c8f9d-xk2ls                      3/3     Running   0          2m
+monitoring-kube-prometheus-operator-5d8b9c8d7f-9h4j2     1/1     Running   0          2m
+monitoring-kube-state-metrics-6c7f8b9d8c-7x2k4           1/1     Running   0          2m
+monitoring-prometheus-node-exporter-k8j2l                1/1     Running   0          2m
+prometheus-monitoring-kube-prometheus-prometheus-0       2/2     Running   0          2m
+```
+
+---
+
+### 3.3 Deploy Elasticsearch & Kibana (Logs)
+
+**Create Elasticsearch values file:**
 
 ```bash
-# Deploy Elasticsearch
-helm upgrade --install elasticsearch elastic/elasticsearch \
-  -n logging --create-namespace -f elk/elasticsearch-values.yaml
+cat > elasticsearch-values.yaml <<'EOF'
+clusterName: elasticsearch
+replicas: 1
+minimumMasterNodes: 1
 
-# Deploy Kibana
-helm upgrade --install kibana elastic/kibana \
-  -n logging -f elk/kibana-values.yaml
+resources:
+  requests:
+    cpu: 500m
+    memory: 2Gi
+  limits:
+    cpu: 1
+    memory: 4Gi
+
+volumeClaimTemplate:
+  storageClassName: standard
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 20Gi
+
+esJavaOpts: "-Xmx2048m -Xms2048m"
+
+secret:
+  enabled: true
+  password: "changeme123"
+EOF
 ```
 
-#### Step 3: Install OpenTelemetry Operator and Collector
+**Deploy Elasticsearch:**
+```bash
+helm upgrade --install elasticsearch elastic/elasticsearch \
+  -n logging --create-namespace -f elasticsearch-values.yaml
+```
 
-##### 3.1. Install OTel Operator
+**Expected Output:**
+```
+Release "elasticsearch" does not exist. Installing it now.
+NAME: elasticsearch
+LAST DEPLOYED: Mon Dec 15 10:35:00 2025
+NAMESPACE: logging
+STATUS: deployed
+REVISION: 1
+NOTES:
+1. Watch all cluster members come up.
+  $ kubectl get pods --namespace=logging -l app=elasticsearch-master -w
+```
 
-The Operator is required for auto-instrumentation.
+**Create Kibana values file:**
+
+```bash
+cat > kibana-values.yaml <<'EOF'
+elasticsearchHosts: "http://elasticsearch-master:9200"
+
+elasticsearchCredentialSecret: "elasticsearch-master-credentials"
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "512Mi"
+  limits:
+    cpu: "500m"
+    memory: "1Gi"
+
+service:
+  type: NodePort
+  nodePort: 30601
+
+readinessProbe:
+  initialDelaySeconds: 60
+  timeoutSeconds: 10
+EOF
+```
+
+**Deploy Kibana:**
+```bash
+helm upgrade --install kibana elastic/kibana \
+  -n logging -f kibana-values.yaml
+```
+
+**Expected Output:**
+```
+Release "kibana" does not exist. Installing it now.
+NAME: kibana
+LAST DEPLOYED: Mon Dec 15 10:36:30 2025
+NAMESPACE: logging
+STATUS: deployed
+REVISION: 1
+```
+
+**Verify Deployment:**
+```bash
+kubectl get pods -n logging
+```
+
+**Expected Output:**
+```
+NAME                             READY   STATUS    RESTARTS   AGE
+elasticsearch-master-0           1/1     Running   0          3m
+kibana-kibana-7d8c9f8b5d-xj4k2   1/1     Running   0          90s
+```
+
+---
+
+## 🔄 Step 4: Deploy OpenTelemetry Collector
+
+### 4.1 Install OTel Operator
 
 ```bash
 helm install opentelemetry-operator open-telemetry/opentelemetry-operator \
   --namespace observability
 ```
 
-##### 3.2. Deploy OpenTelemetry Collector
-
-Deploy the Collector using the comprehensive `otel-collector/collector-values.yaml` file. **You will need to save the content of `otel-collector/collector-values.yaml` to a file before running this command.**
-
-```bash
-helm upgrade --install otel-collector open-telemetry/opentelemetry-collector \
-  -n observability -f otel-collector/collector-values.yaml --wait
+**Expected Output:**
 ```
-
-##### 3.3. Apply Auto-Instrumentation CRD
-
-Apply the `instrumentation.yaml` to enable zero-code auto-instrumentation for your applications (e.g., Java). **You will need to save the content of `otel-collector/instrumentation.yaml` to a file before running this command.**
-
-```bash
-kubectl apply -f otel-collector/instrumentation.yaml
-```
-
-#### Step 4: Verification and Access
-
-Check the status of all pods and access the UIs via port-forwarding.
-
-```bash
-# Check all pods in the observability namespace
-kubectl get pods -n observability
-
-# Check all pods in the monitoring namespace
-kubectl get pods -n monitoring
-
-# Check all pods in the logging namespace
-kubectl get pods -n logging
-
-# Access Grafana (User: admin, Pass: admin123)
-kubectl port-forward svc/monitoring-grafana -n monitoring 3000:80
-
-# Access Jaeger UI
-kubectl port-forward svc/jaeger-query -n observability 16686:16686
-
-# Access Kibana (NodePort 30601 is configured in kibana-values.yaml)
-# Find your cluster's node IP and access: http://<Node-IP>:30601
-# Alternatively, use port-forwarding:
-# kubectl port-forward svc/kibana -n logging 5601:5601
-```
-
-### 💡 Key Features of the Dev/Staging Configuration
-
-| Feature                       | Purpose                                                                                                                                             | Configuration File                     |
-| :---------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------- |
-| **`filelog` Receiver**        | Collects container logs directly from the Kubernetes node filesystem (`/var/log/pods`).                                                             | `otel-collector/collector-values.yaml` |
-| **`tail_sampling` Processor** | Implements intelligent trace sampling (e.g., always keep error traces, always keep traces for critical routes like `/cart`).                        | `otel-collector/collector-values.yaml` |
-| **`k8sattributes` Processor** | Enriches all telemetry data (Traces, Metrics, Logs) with Kubernetes metadata (pod name, namespace, etc.).                                           | `otel-collector/collector-values.yaml` |
-| **Alertmanager Config**       | Pre-configured routing for critical alerts to PagerDuty and lower-severity alerts to Slack.                                                         | `prometheus/alertmanager-config.yaml`  |
-| **Auto-Instrumentation**      | The `instrumentation.yaml` CRD enables zero-code instrumentation for supported languages (e.g., Java) by injecting the OTel agent at the pod level. | `otel-collector/instrumentation.yaml`  |
-
-### 🧹 Cleanup
-
-To remove all deployed components and the KIND cluster:
-
-```bash
-# Delete all Helm releases
-helm delete otel-collector jaeger -n observability
-helm delete monitoring -n monitoring
-helm delete elasticsearch kibana -n logging
-
-# Delete the KIND cluster
-kind delete cluster --name otel-poc
+NAME: opentelemetry-operator
+LAST DEPLOYED: Mon Dec 15 10:38:00 2025
+NAMESPACE: observability
+STATUS: deployed
+REVISION: 1
 ```
 
 ---
 
-## 📄 Configuration File Contents
+### 4.2 Deploy OTel Collector
 
-### 1. `otel-collector/collector-values.yaml`
+**Create collector values file:**
 
-```yaml
-# ==============================================================================
-# OpenTelemetry Collector Helm Values (Dev/Staging)
-# ==============================================================================
+```bash
+cat > collector-values.yaml <<'EOF'
 mode: deployment
 
 image:
   repository: otel/opentelemetry-collector-contrib
-  tag: 0.140.0 # Use a stable, recent contrib image
+  tag: 0.140.0
   pullPolicy: IfNotPresent
 
 presets:
-  - kubernetesAttributes
-  - kubeRBACProxy
+  kubernetesAttributes:
+    enabled: true
 
 service:
   type: ClusterIP
-  ports:
-    otlp-grpc:
-      enabled: true
-      servicePort: 4317
-      containerPort: 4317
-      protocol: TCP
-    otlp-http:
-      enabled: true
-      servicePort: 4318
-      containerPort: 4318
-      protocol: TCP
-    metrics:
-      enabled: true
-      servicePort: 8888
-      containerPort: 8888
-      protocol: TCP
+
+ports:
+  otlp-grpc:
+    enabled: true
+    containerPort: 4317
+    servicePort: 4317
+    protocol: TCP
+  otlp-http:
+    enabled: true
+    containerPort: 4318
+    servicePort: 4318
+    protocol: TCP
+  metrics:
+    enabled: true
+    containerPort: 8888
+    servicePort: 8888
+    protocol: TCP
 
 resources:
   requests:
@@ -196,20 +374,10 @@ resources:
     memory: 1Gi
 
 config:
-  ####################
-  # EXTENSIONS
-  ####################
   extensions:
     health_check:
       endpoint: ":13133"
-    pprof:
-      endpoint: ":1777"
-    zpages:
-      endpoint: ":55679"
 
-  ####################
-  # RECEIVERS
-  ####################
   receivers:
     otlp:
       protocols:
@@ -218,297 +386,235 @@ config:
         http:
           endpoint: 0.0.0.0:4318
 
-    prometheus:
-      config:
-        scrape_configs:
-          - job_name: "otel-collector"
-            static_configs:
-              - targets: ["0.0.0.0:8888"]
-
-    # Filelog receiver for Kubernetes logs (as requested in original config)
-    filelog:
-      include:
-        - /var/log/pods/*/*/*.log
-      start_at: beginning
-      include_file_path: true
-      include_file_name: true
-      operators:
-        - type: json_parser
-          if: 'body matches "^\\{"'
-          parse_from: body
-          parse_to: attributes
-
-        - type: regex_parser
-          regex: '^/var/log/pods/(?P<namespace>[^_]+)_(?P<pod_name>[^_]+)_(?P<pod_uid>[^/]+)/(?P<container_name>[^/]+)/(?P<restart_count>\d+)\.log$'
-          parse_from: attributes["log.file.path"]
-
-  ####################
-  # PROCESSORS
-  ####################
   processors:
+    batch:
+      send_batch_size: 1024
+      timeout: 10s
+    
     memory_limiter:
       check_interval: 5s
       limit_percentage: 75
       spike_limit_percentage: 25
 
-    k8sattributes:
-      auth_type: serviceAccount
-      passthrough: false
-
-    resource:
-      attributes:
-        - key: deployment.environment
-          value: dev
-          action: insert
-        - key: k8s.cluster.name
-          value: otel-poc
-          action: insert
-
-    # Tail Sampling for Traces (as requested in original config)
-    tail_sampling:
-      decision_wait: 10s
-      num_traces: 20000
-      expected_new_traces_per_sec: 50
-      policies:
-        # Always keep 500+ errors
-        - name: http-errors-only
-          type: status_code
-          status_code:
-            status_codes: [ERROR]
-
-        # Always keep business-critical routes
-        - name: cart-and-checkout-only
-          type: string_attribute
-          string_attribute:
-            key: http.route
-            values:
-              - /cart
-              - /checkout
-
-    batch:
-      send_batch_size: 1024
-      timeout: 10s
-
-  ####################
-  # EXPORTERS
-  ####################
   exporters:
     debug:
       verbosity: detailed
-
-    prometheus:
-      endpoint: 0.0.0.0:8888
-      resource_to_telemetry_conversion:
-        enabled: true
-
+    
     otlp/jaeger:
       endpoint: jaeger-all-in-one.observability.svc.cluster.local:4317
       tls:
         insecure: true
-
+    
+    prometheus:
+      endpoint: 0.0.0.0:8888
+    
     elasticsearch:
-      endpoint: https://elasticsearch-master.logging.svc.cluster.local:9200
-      logs_index: otel-logs-dev-%{+yyyy.MM}
+      endpoints: ["https://elasticsearch-master.logging.svc.cluster.local:9200"]
+      logs_index: otel-logs-dev
       user: elastic
-      password: CHANGE_ME # MUST be updated with the actual password
+      password: changeme123
       tls:
         insecure_skip_verify: true
 
-  ####################
-  # SERVICE PIPELINES
-  ####################
   service:
-    extensions: [health_check, pprof, zpages]
-
-    telemetry:
-      logs:
-        level: info
-      metrics:
-        address: 0.0.0.0:8889
-
+    extensions: [health_check]
     pipelines:
       traces:
         receivers: [otlp]
-        processors:
-          - memory_limiter
-          - k8sattributes
-          - resource
-          - tail_sampling
-          - batch
+        processors: [memory_limiter, batch]
         exporters: [debug, otlp/jaeger]
-
       metrics:
-        receivers: [otlp, prometheus]
-        processors:
-          - memory_limiter
-          - k8sattributes
-          - resource
-          - batch
+        receivers: [otlp]
+        processors: [memory_limiter, batch]
         exporters: [prometheus, debug]
-
       logs:
-        receivers: [otlp, filelog]
-        processors:
-          - memory_limiter
-          - k8sattributes
-          - resource
-          - batch
+        receivers: [otlp]
+        processors: [memory_limiter, batch]
         exporters: [debug, elasticsearch]
+EOF
 ```
 
-### 2. `otel-collector/instrumentation.yaml`
-
-```yaml
-# ==============================================================================
-# OpenTelemetry Operator Instrumentation CRD (Auto-Instrumentation)
-# ==============================================================================
-apiVersion: opentelemetry.io/v1alpha1
-kind: Instrumentation
-metadata:
-  name: auto-instrumentation
-  namespace: default # Apply to the default namespace for Dev/Staging apps
-spec:
-  exporter:
-    # Target the OTel Collector service (assuming default Helm release name)
-    endpoint: http://otel-collector-opentelemetry-collector.observability.svc.cluster.local:4318
-
-  propagators:
-    - tracecontext
-    - baggage
-
-  sampler:
-    type: always_on # Always sample for Dev/Staging
-
-  java:
-    image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-java:latest
-    env:
-      - name: OTEL_TRACES_EXPORTER
-        value: "otlp"
-      - name: OTEL_METRICS_EXPORTER
-        value: "otlp"
-      - name: OTEL_LOGS_EXPORTER
-        value: "otlp"
-      - name: OTEL_EXPORTER_OTLP_PROTOCOL
-        value: "http/protobuf" # Use HTTP/protobuf for local/KIND stability
+**Deploy:**
+```bash
+helm upgrade --install otel-collector open-telemetry/opentelemetry-collector \
+  -n observability -f collector-values.yaml --wait
 ```
 
-### 3. `prometheus/alertmanager-config.yaml`
-
-```yaml
-# ==============================================================================
-# Prometheus Alertmanager Helm Values (Dev/Staging)
-# ==============================================================================
-alertmanager:
-  config:
-    global: {}
-
-    receivers:
-      - name: "null"
-
-      - name: "slack-notifications"
-        slack_configs:
-          - channel: "#alerts-devops"
-            api_url: "{SLACK_WEBHOOK_URL}" # Placeholder for Slack Webhook
-            send_resolved: true
-            title: "[{{ .Status | toUpper }}] - {{ .CommonLabels.alertname }}"
-            text: |
-              *Severity:* {{ .CommonLabels.severity }}
-              *Summary:* {{ .CommonLabels.summary }}
-
-      - name: "pagerduty-critical"
-        pagerduty_configs:
-          - service_key: "{PAGERDUTY_INTEGRATION_KEY}" # Placeholder for PagerDuty Key
-            send_resolved: true
-            severity: "critical"
-
-    route:
-      group_by: ["alertname", "cluster", "service"]
-      receiver: "null"
-      group_wait: 30s
-      group_interval: 5m
-      repeat_interval: 4h
-
-      routes:
-        - match:
-            severity: "critical"
-          receiver: "pagerduty-critical"
-          group_wait: 5s
-          group_interval: 1m
-
-        - matchers:
-            - severity =~ "warning|info"
-          receiver: "slack-notifications"
+**Expected Output:**
+```
+Release "otel-collector" does not exist. Installing it now.
+NAME: otel-collector
+LAST DEPLOYED: Mon Dec 15 10:40:00 2025
+NAMESPACE: observability
+STATUS: deployed
+REVISION: 1
 ```
 
-### 4. `elk/elasticsearch-values.yaml`
-
-```yaml
-# ==============================================================================
-# Elasticsearch Helm Values (Dev/Staging)
-# ==============================================================================
-clusterName: elasticsearch
-
-# Security settings (MUST be changed for any environment)
-auth:
-  enabled: true
-  elasticUser:
-    password: "CHANGE_ME" # Must change
-  kibana:
-    password: "CHANGE_ME_KIBANA"
-
-# Reduced replicas for Dev/Staging
-replicas: 1 # Changed from 3 to 1 for simplicity and resource saving
-minimumMasterNodes: 1
-
-# Resource allocation (reduced for Dev/Staging)
-resources:
-  requests:
-    cpu: 500m # Reduced from 1
-    memory: 2Gi # Reduced from 4Gi
-  limits:
-    cpu: 1
-    memory: 4Gi
-
-# Volume Claim Template (using default storage class)
-volumeClaimTemplate:
-  storageClassName: standard # Changed from gp2 to standard for broader compatibility
-  accessModes: ["ReadWriteOnce"]
-  resources:
-    requests:
-      storage: 20Gi # Reduced from 50Gi
-
-# Java Heap Size (50% of memory limit)
-esJavaOpts: "-Xmx2048m -Xms2048m" # 2GB heap for 4GB limit
+**Verify:**
+```bash
+kubectl get pods -n observability
 ```
 
-### 5. `elk/kibana-values.yaml`
+**Expected Output:**
+```
+NAME                                                READY   STATUS    RESTARTS   AGE
+jaeger-all-in-one-0                                 1/1     Running   0          10m
+opentelemetry-operator-75d8c9f8b5d-k2j4l            2/2     Running   0          2m
+otel-collector-opentelemetry-collector-7b8d9c8-xj2  1/1     Running   0          45s
+```
 
-```yaml
-# ==============================================================================
-# Kibana Helm Values (Dev/Staging)
-# ==============================================================================
-# Match Elasticsearch service name
-elasticsearchHosts: "http://elasticsearch-master:9200"
+---
 
-# Match Elasticsearch password secret
-elasticsearchCredentialSecret: "elasticsearch-master-credentials" # Assuming the default secret name
+## 🎯 Step 5: Access the UIs
 
-# Resource allocation
-resources:
-  requests:
-    cpu: "100m"
-    memory: "512Mi"
-  limits:
-    cpu: "500m"
-    memory: "1Gi"
+### Access Grafana
 
-# Service configuration
-service:
-  type: NodePort
-  nodePort: 30601 # Expose Kibana on this port for easy access
+```bash
+kubectl port-forward svc/monitoring-grafana -n monitoring 3000:80
+```
 
-# Readiness check
-readinessProbe:
-  initialDelaySeconds: 60
-  timeoutSeconds: 10
+**Expected Output:**
+```
+Forwarding from 127.0.0.1:3000 -> 3000
+Forwarding from [::1]:3000 -> 3000
+```
+
+**Access:** http://localhost:3000
+- **Username:** admin
+- **Password:** admin123
+
+---
+
+### Access Jaeger
+
+```bash
+kubectl port-forward svc/jaeger-query -n observability 16686:16686
+```
+
+**Expected Output:**
+```
+Forwarding from 127.0.0.1:16686 -> 16686
+Forwarding from [::1]:16686 -> 16686
+```
+
+**Access:** http://localhost:16686
+
+---
+
+### Access Kibana
+
+```bash
+kubectl port-forward svc/kibana-kibana -n logging 5601:5601
+```
+
+**Expected Output:**
+```
+Forwarding from 127.0.0.1:5601 -> 5601
+Forwarding from [::1]:5601 -> 5601
+```
+
+**Access:** http://localhost:5601
+- **Username:** elastic
+- **Password:** changeme123
+
+---
+
+## ✅ Verification Commands
+
+### Check All Namespaces
+
+```bash
+kubectl get all -n observability
+kubectl get all -n monitoring
+kubectl get all -n logging
+```
+
+**Expected Summary:**
+```
+# observability namespace: 3+ pods running
+# monitoring namespace: 6+ pods running
+# logging namespace: 2+ pods running
+```
+
+---
+
+### Test OTel Collector Connectivity
+
+```bash
+kubectl run test-curl --image=curlimages/curl -i --rm --restart=Never -- \
+  curl -X POST http://otel-collector-opentelemetry-collector.observability.svc.cluster.local:4318/v1/traces \
+  -H "Content-Type: application/json" \
+  -d '{"resourceSpans":[]}'
+```
+
+**Expected Output:**
+```
+{}
+pod "test-curl" deleted
+```
+
+---
+
+## 🧹 Cleanup
+
+```bash
+# Delete Helm releases
+helm delete otel-collector opentelemetry-operator jaeger -n observability
+helm delete monitoring -n monitoring
+helm delete elasticsearch kibana -n logging
+
+# Delete namespaces
+kubectl delete namespace observability monitoring logging
+
+# Delete KIND cluster
+kind delete cluster --name otel-poc
+```
+
+**Expected Output:**
+```
+release "otel-collector" uninstalled
+release "opentelemetry-operator" uninstalled
+release "jaeger" uninstalled
+release "monitoring" uninstalled
+release "elasticsearch" uninstalled
+release "kibana" uninstalled
+namespace "observability" deleted
+namespace "monitoring" deleted
+namespace "logging" deleted
+Deleting cluster "otel-poc" ...
+```
+
+---
+
+## 🎉 Success Criteria
+
+✅ All pods in `observability`, `monitoring`, and `logging` namespaces are in **Running** state  
+✅ Grafana accessible at http://localhost:3000  
+✅ Jaeger UI accessible at http://localhost:16686  
+✅ Kibana accessible at http://localhost:5601  
+✅ OTel Collector accepting OTLP traces/metrics/logs on ports 4317/4318  
+
+---
+
+## 📊 Expected Architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│                  Application Pods                    │
+│            (Auto-instrumented via OTel)             │
+└────────────────────┬────────────────────────────────┘
+                     │ OTLP (4317/4318)
+                     ▼
+┌─────────────────────────────────────────────────────┐
+│           OpenTelemetry Collector                    │
+│  (Receives, Processes, Exports Telemetry)           │
+└──────┬──────────────┬──────────────┬────────────────┘
+       │              │              │
+       │ Traces       │ Metrics      │ Logs
+       ▼              ▼              ▼
+┌──────────┐   ┌──────────────┐   ┌──────────────┐
+│  Jaeger  │   │  Prometheus  │   │ Elasticsearch│
+│  :16686  │   │  + Grafana   │   │  + Kibana    │
+└──────────┘   │  :3000       │   │  :5601       │
+               └──────────────┘   └──────────────┘
 ```
