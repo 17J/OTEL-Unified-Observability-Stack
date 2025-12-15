@@ -6,45 +6,14 @@ This document provides a complete, production-grade template for deploying a uni
 
 It integrates the OpenTelemetry Collector with all three major backends: **Jaeger** (Traces), **Prometheus/Grafana** (Metrics), and **Elasticsearch/Kibana** (Logs).
 
-### 📦 Repository Structure (Conceptual)
 
-This single file contains the content for the following conceptual repository structure:
-
-```
-.
-├── otel-collector/
-│   ├── collector-values.yaml     # Helm values for the OTel Collector
-│   └── instrumentation.yaml      # OTel Operator Instrumentation CRD for auto-instrumentation
-├── prometheus/
-│   └── alertmanager-config.yaml  # Alertmanager configuration for Slack/PagerDuty
-├── elk/
-│   ├── elasticsearch-values.yaml # Helm values for Elasticsearch (single-node for dev)
-│   └── kibana-values.yaml        # Helm values for Kibana
-└── README.md                     # This deployment guide
-```
 
 ### 🚀 Step-by-Step Deployment Guide
 
 This guide assumes you have **Docker**, **kubectl**, and **Helm** installed.
 
-#### Step 1: Setup Local Kubernetes Cluster (KIND)
 
-If you are using a local cluster, create it first.
-
-```bash
-# 1. Install KIND (if needed)
-# curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-amd64
-# chmod +x ./kind
-# mv ./kind /usr/local/bin/kind
-
-# 2. Create the cluster
-kind create cluster --name otel-poc
-
-# 3. Verify
-kubectl get nodes
-```
-
-#### Step 2: Add Helm Repositories
+#### Step 1: Add Helm Repositories
 
 Add all necessary Helm charts for the observability components.
 
@@ -57,11 +26,11 @@ helm repo add elastic https://helm.elastic.co
 helm repo update
 ```
 
-#### Step 3: Install Core Backends (Jaeger, Prometheus/Grafana, ELK)
+#### Step 2: Install Core Backends (Jaeger, Prometheus/Grafana, ELK)
 
 We will install each component into its own namespace for clear separation.
 
-##### 3.1. Jaeger (Traces)
+##### 2.1. Jaeger (Traces)
 
 Deploy Jaeger in all-in-one mode for simplicity, using in-memory storage.
 
@@ -75,7 +44,7 @@ helm upgrade --install jaeger jaegertracing/jaeger \
   --set collector.service.otlp.http.port=4318
 ```
 
-##### 3.2. Prometheus & Grafana (Metrics)
+##### 2.2. Prometheus & Grafana (Metrics)
 
 Deploy the `kube-prometheus-stack` using the provided Alertmanager configuration. **You will need to save the content of `prometheus/alertmanager-config.yaml` to a file before running this command.**
 
@@ -86,7 +55,7 @@ helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
   -f prometheus/alertmanager-config.yaml
 ```
 
-##### 3.3. Elasticsearch & Kibana (Logs)
+##### 2.3. Elasticsearch & Kibana (Logs)
 
 Deploy a single-node Elasticsearch cluster and Kibana using the provided values files. **Remember to update the passwords in `elk/elasticsearch-values.yaml` and save the content of both `elk/elasticsearch-values.yaml` and `elk/kibana-values.yaml` to files before running these commands.**
 
@@ -100,9 +69,9 @@ helm upgrade --install kibana elastic/kibana \
   -n logging -f elk/kibana-values.yaml
 ```
 
-#### Step 4: Install OpenTelemetry Operator and Collector
+#### Step 3: Install OpenTelemetry Operator and Collector
 
-##### 4.1. Install OTel Operator
+##### 3.1. Install OTel Operator
 
 The Operator is required for auto-instrumentation.
 
@@ -111,7 +80,7 @@ helm install opentelemetry-operator open-telemetry/opentelemetry-operator \
   --namespace observability
 ```
 
-##### 4.2. Deploy OpenTelemetry Collector
+##### 3.2. Deploy OpenTelemetry Collector
 
 Deploy the Collector using the comprehensive `otel-collector/collector-values.yaml` file. **You will need to save the content of `otel-collector/collector-values.yaml` to a file before running this command.**
 
@@ -120,7 +89,7 @@ helm upgrade --install otel-collector open-telemetry/opentelemetry-collector \
   -n observability -f otel-collector/collector-values.yaml --wait
 ```
 
-##### 4.3. Apply Auto-Instrumentation CRD
+##### 3.3. Apply Auto-Instrumentation CRD
 
 Apply the `instrumentation.yaml` to enable zero-code auto-instrumentation for your applications (e.g., Java). **You will need to save the content of `otel-collector/instrumentation.yaml` to a file before running this command.**
 
@@ -128,7 +97,7 @@ Apply the `instrumentation.yaml` to enable zero-code auto-instrumentation for yo
 kubectl apply -f otel-collector/instrumentation.yaml
 ```
 
-#### Step 5: Verification and Access
+#### Step 4: Verification and Access
 
 Check the status of all pods and access the UIs via port-forwarding.
 
