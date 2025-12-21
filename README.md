@@ -1,4 +1,4 @@
-# 🛠️ OpenTelemetry Observability Stack - Production-Ready Dev/Staging Deployment
+# 🛠️ OpenTelemetry Observability Stack - Dev/Staging Deployment
 
 Complete deployment guide for OpenTelemetry with Jaeger, Prometheus, and ELK stack in Kubernetes (KIND/Minikube) - optimized for dev/staging with production-like persistence and reliability.
 
