@@ -1,0 +1,196 @@
+mode: deployment
+
+image:
+  repository: otel/opentelemetry-collector-contrib
+  tag: 0.140.0
+  pullPolicy: IfNotPresent
+
+presets:
+  - kubernetesAttributes
+  - kubeRBACProxy
+
+service:
+  type: ClusterIP
+  ports:
+    otlp-grpc:
+      enabled: true
+      servicePort: 4317
+      containerPort: 4317
+      protocol: TCP
+    otlp-http:
+      enabled: true
+      servicePort: 4318
+      containerPort: 4318
+      protocol: TCP
+    metrics:
+      enabled: true
+      servicePort: 8888
+      containerPort: 8888
+      protocol: TCP
+
+resources:
+  requests:
+    cpu: 300m
+    memory: 512Mi
+  limits:
+    cpu: 1
+    memory: 1Gi
+
+config:
+  ####################
+  # EXTENSIONS
+  ####################
+  extensions:
+    health_check:
+      endpoint: ":13133"
+    pprof:
+      endpoint: ":1777"
+    zpages:
+      endpoint: ":55679"
+
+  ####################
+  # RECEIVERS
+  ####################
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+    prometheus:
+      config:
+        scrape_configs:
+          - job_name: "otel-collector"
+            static_configs:
+              - targets: ["0.0.0.0:8888"]
+
+    filelog:
+      include:
+        - /var/log/pods/*/*/*.log
+      start_at: beginning
+      include_file_path: true
+      include_file_name: true
+      operators:
+        - type: json_parser
+          if: 'body matches "^\\{"'
+          parse_from: body
+          parse_to: attributes
+
+        - type: regex_parser
+          regex: '^/var/log/pods/(?P<namespace>[^_]+)_(?P<pod_name>[^_]+)_(?P<pod_uid>[^/]+)/(?P<container_name>[^/]+)/(?P<restart_count>\d+)\.log$'
+          parse_from: attributes["log.file.path"]
+
+  ####################
+  # PROCESSORS
+  ####################
+  processors:
+    memory_limiter:
+      check_interval: 5s
+      limit_percentage: 75
+      spike_limit_percentage: 25
+
+    k8sattributes:
+      auth_type: serviceAccount
+      passthrough: false
+
+    resource:
+      attributes:
+        - key: deployment.environment
+          value: dev
+          action: insert
+        - key: k8s.cluster.name
+          value: otel-poc
+          action: insert
+
+    # ✅ BUSINESS + ERROR BASED TAIL SAMPLING
+    tail_sampling:
+      decision_wait: 10s
+      num_traces: 20000
+      expected_new_traces_per_sec: 50
+      policies:
+        # ✅ Always keep 500+ errors
+        - name: http-errors-only
+          type: status_code
+          status_code:
+            status_codes: [ERROR]
+
+        # ✅ Always keep business-critical routes
+        - name: cart-and-checkout-only
+          type: string_attribute
+          string_attribute:
+            key: http.route
+            values:
+              - /cart
+              - /checkout
+
+    batch:
+      send_batch_size: 1024
+      timeout: 10s
+
+  ####################
+  # EXPORTERS
+  ####################
+  exporters:
+    debug:
+      verbosity: detailed
+
+    prometheus:
+      endpoint: 0.0.0.0:8888
+      resource_to_telemetry_conversion:
+        enabled: true
+
+    otlp/jaeger:
+      endpoint: jaeger-all-in-one.observability.svc.cluster.local:4317
+      tls:
+        insecure: true
+
+    elasticsearch:
+      endpoint: https://elasticsearch-master.logging.svc.cluster.local:9200
+      logs_index: otel-logs-dev-%{+yyyy.MM}
+      user: elastic
+      password: CHANGE_ME
+      tls:
+        insecure_skip_verify: true
+
+  ####################
+  # SERVICE PIPELINES
+  ####################
+  service:
+    extensions: [health_check, pprof, zpages]
+
+    telemetry:
+      logs:
+        level: info
+      metrics:
+        address: 0.0.0.0:8889
+
+    pipelines:
+      traces:
+        receivers: [otlp]
+        processors:
+          - memory_limiter
+          - k8sattributes
+          - resource
+          - tail_sampling
+          - batch
+        exporters: [debug, otlp/jaeger]
+
+      metrics:
+        receivers: [otlp, prometheus]
+        processors:
+          - memory_limiter
+          - k8sattributes
+          - resource
+          - batch
+        exporters: [prometheus, debug]
+
+      logs:
+        receivers: [otlp, filelog]
+        processors:
+          - memory_limiter
+          - k8sattributes
+          - resource
+          - batch
+        exporters: [debug, elasticsearch]
