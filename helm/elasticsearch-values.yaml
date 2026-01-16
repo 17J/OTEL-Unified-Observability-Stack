@@ -1,0 +1,26 @@
+clusterName: elasticsearch
+
+auth:
+  enabled: true
+  elasticUser:
+    password: "Admin" # Must change
+  kibana:
+    password: "Admin123"
+
+replicas: 3
+resources:
+  requests:
+    cpu: 1
+    memory: 4Gi
+  limits:
+    cpu: 2
+    memory: 4Gi
+
+volumeClaimTemplate:
+  storageClassName: gp2
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 50Gi
+
+esJavaOpts: "-Xmx2048m -Xms2048m" # 50% of memory
